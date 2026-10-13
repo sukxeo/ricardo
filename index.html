@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>바다 위의 라팔</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #c9cccf; font-family: sans-serif; }
+  canvas { display: block; }
+  #overlay { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #overlay line { stroke: #444; stroke-width: 1; }
+  .dot {
+    position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px;
+    border: 1.5px solid #222; border-radius: 50%; background: rgba(255,255,255,.92);
+    display: none; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .dot::after { content: ""; width: 5px; height: 5px; border-radius: 50%; background: #222; }
+  .tag {
+    position: absolute; transform: translateY(-50%); padding: 6px 14px;
+    border: 1px solid #bbb; border-radius: 999px; background: #fff; color: #222;
+    font-size: 14px; white-space: nowrap; cursor: pointer; display: none;
+    box-shadow: 0 2px 6px rgba(0,0,0,.1);
+  }
+  #hint {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    color: #fff; background: rgba(0,0,0,.4); padding: 8px 14px; border-radius: 999px;
+    font-size: 13px; pointer-events: none; transition: opacity .4s; white-space: nowrap;
+  }
+  #back {
+    position: fixed; left: 16px; top: 16px; padding: 8px 14px; border: 0;
+    border-radius: 999px; background: rgba(255,255,255,.92); cursor: pointer; display: none;
+  }
+  #modal {
+    position: fixed; inset: 0; display: none; place-items: center;
+    background: rgba(0,0,0,.35); z-index: 10;
+  }
+  #modal .box {
+    background: #fff; width: calc(100% - 40px); max-width: 480px; max-height: 80vh;
+    overflow-y: auto; padding: 24px; border-radius: 12px; line-height: 1.7;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<svg id="overlay"></svg>
+<button id="back">← 돌아가기</button>
+<div id="hint">전투기를 눌러 보세요</div>
+<div id="modal"><div class="box" id="modalBox"></div></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ───────── 설정 ───────── */
+const PLANE_C   = new THREE.Vector3(0, 3.2, 0);          // 전투기 중심 위치
+const HOME_POS  = new THREE.Vector3(0, 5, 26);            // 기본 카메라 위치
+const HOME_LOOK = new THREE.Vector3(0, 3, 0);             // 기본 카메라 시선
+const FINAL_DIR = new THREE.Vector3(-0.35, 0.38, 0.86).normalize(); // 오른쪽 옆, 살짝 뒤, 살짝 위
+const ANIM_TIME = 2.6;                                    // 카메라 이동 시간(초)
+const SEA_COLOR = 0x7a7f84;
+const SKY_COLOR = 0xc9cccf;
+
+// 핫스팟: pos는 전투기 모델 기준 좌표, dx/dy는 라벨 오프셋(px)
+const HOTSPOTS = [
+  { title: 'info',    pos: [0.1,  0.1, 1.0],   dx: -170, dy: -110, text: '첫 번째 내용을 여기에 적으세요.' },
+  { title: 'caution', pos: [-0.7, 0.1, -1.1],  dx: -170, dy:  110, text: '두 번째 내용을 여기에 적으세요.' },
+  { title: '名1',     pos: [-1.0, 0.5, 0.2],   dx:  170, dy: -110, text: '세 번째 내용을 여기에 적으세요.' },
+  { title: 'fyi',     pos: [0.9,  0.3, 0.0],   dx:  170, dy:  110, text: '네 번째 내용을 여기에 적으세요.' },
+];
+/* ─────────────────────── */
+
+const isPortrait = () => innerWidth < innerHeight;
+
+// 기본 화면에서 전투기를 얼마나 옮길지 (화면 비율 기준)
+function homeOffset() {
+  return isPortrait()
+    ? { x: -0.14 * innerWidth / 2, y:  0.28 * innerHeight / 2 }   // 모바일: 중앙에서 살짝 오른쪽 위
+    : { x: -0.22 * innerWidth / 2, y:  0.12 * innerHeight / 2 };  // PC
+}
+
+// 확대 시 카메라 거리: 전투기가 화면 가로에 잘리지 않도록 계산
+function zoomDist() {
+  const t = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const aspect = innerWidth / innerHeight;
+  const dW = 5.4 / (2 * t * aspect);
+  return Math.max(7.5, dW);
+}
+
+/* ───────── 렌더러 / 씬 / 카메라 ───────── */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(SKY_COLOR);
+scene.fog = new THREE.Fog(SKY_COLOR, 35, 320);
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 1000);
+camera.position.copy(HOME_POS);
+const lookCur = HOME_LOOK.clone();
+camera.lookAt(lookCur);
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x6d7378, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+sun.position.set(-4, 10, 6);
+scene.add(sun);
+
+/* ───────── 바다 ───────── */
+const seaGeo = new THREE.PlaneGeometry(600, 600, 160, 160);
+seaGeo.rotateX(-Math.PI / 2);
+const sea = new THREE.Mesh(seaGeo, new THREE.MeshStandardMaterial({
+  color: SEA_COLOR, roughness: 0.45, metalness: 0.05,
+}));
+scene.add(sea);
+const seaBase = seaGeo.attributes.position.array.slice();
+
+function waveY(x, z, t) {
+  return Math.sin(x * 0.22 + t * 0.9) * 0.14
+       + Math.sin(z * 0.31 - t * 0.7) * 0.12
+       + Math.sin(x * 0.6 + z * 0.4 + t * 1.6) * 0.05;
+}
+
+/* ───────── 구름 (흐릿하게 천천히 이동) ───────── */
+function makeCloudTexture() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 128;
+  const ctx = c.getContext('2d');
+  for (let i = 0; i < 9; i++) {
+    const cx = 60 + Math.random() * 136, cy = 40 + Math.random() * 48, r = 30 + Math.random() * 34;
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    g.addColorStop(0, 'rgba(255,255,255,0.9)');
+    g.addColorStop(0.5, 'rgba(255,255,255,0.35)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 256, 128);
+  }
+  return new THREE.CanvasTexture(c);
+}
+const cloudTex = makeCloudTexture();
+const clouds = [];
+for (let i = 0; i < 26; i++) {
+  const mat = new THREE.SpriteMaterial({
+    map: cloudTex, color: 0xf2f3f4, transparent: true,
+    opacity: 0.35 + Math.random() * 0.25, depthWrite: false,
+  });
+  const s = new THREE.Sprite(mat);
+  const sc = 50 + Math.random() * 60;
+  s.scale.set(sc, sc * 0.42, 1);
+  s.position.set(-260 + Math.random() * 520, 12 + Math.random() * 16, -90 - Math.random() * 110);
+  s.userData.speed = 0.6 + Math.random() * 1.2;
+  scene.add(s);
+  clouds.push(s);
+}
+
+/* ───────── 라팔 모델 (절차적 생성, 기수는 +X 방향) ───────── */
+function makeRafale() {
+  const g = new THREE.Group();
+  const black = new THREE.MeshStandardMaterial({ color: 0x0c0c0e, metalness: 0.35, roughness: 0.3, side: THREE.DoubleSide });
+  const dark  = new THREE.MeshStandardMaterial({ color: 0x030304, metalness: 0.2, roughness: 0.7, side: THREE.DoubleSide });
+  const glass = new THREE.MeshStandardMaterial({ color: 0x1d2630, metalness: 0.9, roughness: 0.05 });
+
+  // 동체: 회전체를 만든 뒤 Y축(세로)을 X축(가로)으로 눕힘
+  const prof = [[0,2.1],[0.12,1.95],[0.2,1.7],[0.26,1.3],[0.28,0.6],[0.27,0],
+                [0.25,-0.8],[0.2,-1.5],[0.16,-1.9],[0,-1.92]];
+  const fus = new THREE.LatheGeometry(prof.map(([r, y]) => new THREE.Vector2(r, y)), 32);
+  fus.rotateZ(-Math.PI / 2);
+  g.add(new THREE.Mesh(fus, black));
+
+  // 주날개 (델타형, 좌우 대칭 한 장)
+  const wingShape = new THREE.Shape();
+  wingShape.moveTo(1.1, 0.2);
+  wingShape.lineTo(-1.5, 1.85);
+  wingShape.lineTo(-1.25, 0.25);
+  wingShape.lineTo(-1.25, -0.25);
+  wingShape.lineTo(-1.5, -1.85);
+  wingShape.lineTo(1.1, -0.2);
+  wingShape.closePath();
+  const wingGeo = new THREE.ExtrudeGeometry(wingShape, { depth: 0.05, bevelEnabled: false });
+  wingGeo.rotateX(-Math.PI / 2);
+  const wing = new THREE.Mesh(wingGeo, black);
+  wing.position.y = -0.02;
+  g.add(wing);
+
+  // 카나드 (앞쪽 작은 날개)
+  const canShape = new THREE.Shape();
+  canShape.moveTo(1.6, 0.08);
+  canShape.lineTo(1.0, 0.8);
+  canShape.lineTo(0.9, 0.08);
+  canShape.lineTo(0.9, -0.08);
+  canShape.lineTo(1.0, -0.8);
+  canShape.lineTo(1.6, -0.08);
+  canShape.closePath();
+  const canGeo = new THREE.ExtrudeGeometry(canShape, { depth: 0.04, bevelEnabled: false });
+  canGeo.rotateX(-Math.PI / 2);
+  const can = new THREE.Mesh(canGeo, black);
+  can.position.y = 0.05;
+  g.add(can);
+
+  // 수직꼬리날개 (좌우 두 개, 바깥쪽으로 살짝 기울임)
+  const finShape = new THREE.Shape();
+  finShape.moveTo(0.2, 0.0);
+  finShape.lineTo(-0.9, 1.0);
+  finShape.lineTo(-1.5, 1.0);
+  finShape.lineTo(-1.25, 0.0);
+  finShape.closePath();
+  const finGeo = new THREE.ExtrudeGeometry(finShape, { depth: 0.05, bevelEnabled: false });
+  finGeo.translate(0, 0, -0.025);
+  for (const s of [-1, 1]) {
+    const f = new THREE.Mesh(finGeo, black);
+    f.position.set(-0.1, 0.12, s * 0.2);
+    f.rotation.x = s * 0.12;
+    g.add(f);
+  }
+
+  // 엔진 노즐 (쌍발)
+  const nozGeo = new THREE.CylinderGeometry(0.13, 0.11, 0.3, 20, 1, true);
+  nozGeo.rotateZ(-Math.PI / 2);
+  for (const s of [-1, 1]) {
+    const n = new THREE.Mesh(nozGeo, dark);
+    n.position.set(-1.98, 0, s * 0.14);
+    g.add(n);
+  }
+
+  // 캐노피
+  const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.22, 24, 16), glass);
+  canopy.scale.set(1.8, 0.75, 0.9);
+  canopy.position.set(1.05, 0.2, 0);
+  g.add(canopy);
+
+  return g;
+}
+
+// 전투기 루트(고정 위치) > 본체(떠오르기 애니메이션)
+const planeRoot = new THREE.Group();
+planeRoot.position.copy(PLANE_C);
+scene.add(planeRoot);
+
+const planeBody = new THREE.Group();
+planeRoot.add(planeBody);
+planeBody.add(makeRafale());
+
+// 클릭 판정용 보이지 않는 구
+const hitMesh = new THREE.Mesh(
+  new THREE.SphereGeometry(2.2, 12, 8),
+  new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
+);
+planeRoot.add(hitMesh);
+
+/* ───────── 핫스팟 (확대 후에만 표시) ───────── */
+const overlay = document.getElementById('overlay');
+const svgNS = 'http://www.w3.org/2000/svg';
+const modal = document.getElementById('modal');
+const modalBox = document.getElementById('modalBox');
+const backBtn = document.getElementById('back');
+const hint = document.getElementById('hint');
+
+const hotspotEls = HOTSPOTS.map(h => {
+  const line = document.createElementNS(svgNS, 'line');
+  overlay.appendChild(line);
+
+  const dot = document.createElement('div');
+  dot.className = 'dot';
+  document.body.appendChild(dot);
+
+  const tag = document.createElement('div');
+  tag.className = 'tag';
+  tag.textContent = h.title;
+  document.body.appendChild(tag);
+
+  const open = e => {
+    e.stopPropagation();
+    modalBox.innerHTML = `<h2>${h.title}</h2><p>${h.text}</p>`;
+    modal.style.display = 'grid';
+  };
+  dot.addEventListener('click', open);
+  tag.addEventListener('click', open);
+
+  return { h, line, dot, tag, world: new THREE.Vector3() };
+});
+
+modal.addEventListener('click', () => { modal.style.display = 'none'; });
+
+function hideHotspots() {
+  hotspotEls.forEach(({ line, dot, tag }) => {
+    line.style.display = 'none';
+    dot.style.display = 'none';
+    tag.style.display = 'none';
+  });
+}
+
+function updateHotspots() {
+  const w = innerWidth, hgt = innerHeight;
+  hotspotEls.forEach(({ h, line, dot, tag, world }) => {
+    world.set(...h.pos);
+    planeBody.localToWorld(world);
+    const p = world.clone().project(camera);
+    const visible = p.z < 1;
+    const x = (p.x * 0.5 + 0.5) * w;
+    const y = (-p.y * 0.5 + 0.5) * hgt;
+    const tx = x + h.dx, ty = y + h.dy;
+    const d = visible ? '' : 'none';
+    line.style.display = dot.style.display = tag.style.display = d;
+    if (!visible) return;
+    dot.style.left = x + 'px';  dot.style.top = y + 'px';
+    tag.style.left = tx + 'px'; tag.style.top = ty + 'px';
+    line.setAttribute('x1', x);  line.setAttribute('y1', y);
+    line.setAttribute('x2', tx); line.setAttribute('y2', ty);
+  });
+}
+
+/* ───────── 카메라 상태 & 전환 ───────── */
+let zoomed = false;
+let anim = null;      // { from, mid, to, t }
+let offX = 0, offY = 0;
+
+function homeState() {
+  const o = homeOffset();
+  return { pos: HOME_POS.clone(), look: HOME_LOOK.clone(), x: o.x, y: o.y };
+}
+function zoomState() {
+  const d = zoomDist();
+  return {
+    pos: PLANE_C.clone().addScaledVector(FINAL_DIR, d),
+    look: PLANE_C.clone(), x: 0, y: 0,
+  };
+}
+// 위에서 아래를 내려다보는 중간 지점
+function topState() {
+  const d = zoomDist();
+  return {
+    pos: PLANE_C.clone().add(new THREE.Vector3(0, d * 1.2, 0.02)),
+    look: PLANE_C.clone(), x: 0, y: 0,
+  };
+}
+function snapshot() {
+  return { pos: camera.position.clone(), look: lookCur.clone(), x: offX, y: offY };
+}
+function lerpState(a, b, k) {
+  return {
+    pos: a.pos.clone().lerp(b.pos, k),
+    look: a.look.clone().lerp(b.look, k),
+    x: a.x + (b.x - a.x) * k,
+    y: a.y + (b.y - a.y) * k,
+  };
+}
+const easeInOut = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+function applyState(s) {
+  camera.position.copy(s.pos);
+  lookCur.copy(s.look);
+  camera.lookAt(lookCur);
+  offX = s.x; offY = s.y;
+  camera.setViewOffset(innerWidth, innerHeight, offX, offY, innerWidth, innerHeight);
+}
+
+function startAnim(toZoom) {
+  zoomed = toZoom;
+  anim = {
+    from: snapshot(),
+    mid: topState(),
+    to: toZoom ? zoomState() : homeState(),
+    t: 0,
+  };
+  hint.style.opacity = 0;
+  backBtn.style.display = 'none';
+  hideHotspots();
+}
+
+/* ───────── 클릭: 전투기 확대 / 돌아가기 ───────── */
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+
+renderer.domElement.addEventListener('click', e => {
+  if (anim || zoomed) return;
+  mouse.x = (e.clientX / innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  if (raycaster.intersectObject(hitMesh, false).length > 0) startAnim(true);
+});
+
+backBtn.addEventListener('click', () => { if (!anim) startAnim(false); });
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+/* ───────── 애니메이션 루프 ───────── */
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  const t = clock.elapsedTime;
+
+  // 바다 잔물결
+  const pos = seaGeo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    pos.setY(i, waveY(seaBase[i * 3], seaBase[i * 3 + 2], t));
+  }
+  pos.needsUpdate = true;
+  seaGeo.computeVertexNormals();
+
+  // 구름 천천히 이동
+  clouds.forEach(c => {
+    c.position.x += c.userData.speed * dt;
+    if (c.position.x > 260) c.position.x = -260;
+  });
+
+  // 전투기 떠다니는 움직임 (루트는 고정, 본체만 움직임)
+  planeBody.position.y = Math.sin(t * 1.2) * 0.12;
+  planeBody.rotation.z = Math.sin(t * 0.8) * 0.03;
+
+  if (anim) {
+    anim.t = Math.min(anim.t + dt / ANIM_TIME, 1);
+    const s = anim.t < 0.5
+      ? lerpState(anim.from, anim.mid, easeInOut(anim.t * 2))
+      : lerpState(anim.mid, anim.to, easeInOut((anim.t - 0.5) * 2));
+    applyState(s);
+    if (anim.t >= 1) {
+      anim = null;
+      if (zoomed) backBtn.style.display = 'block';
+      if (zoomed) hint.style.opacity = 0;
+    }
+  } else {
+    // 대기 상태: 화면 비율이 바뀌어도 맞게 유지
+    applyState(zoomed ? zoomState() : homeState());
+  }
+
+  if (zoomed && !anim) {
+    updateHotspots();
+  }
+
+  renderer.render(scene, camera);
+}
+
+// 시작 시 힌트 표시
+hint.style.opacity = 1;
+animate();
+</script>
+</body>
+</html>
