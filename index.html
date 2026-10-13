@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>바다 위의 라팔</title>
+<title>바다 위의 전투기</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #c9cccf; font-family: sans-serif; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #d8dce0; font-family: sans-serif; }
   canvas { display: block; }
   #overlay { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-  #overlay line { stroke: #444; stroke-width: 1; }
+  #overlay line { stroke: #333; stroke-width: 1; }
   .dot {
     position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px;
     border: 1.5px solid #222; border-radius: 50%; background: rgba(255,255,255,.92);
@@ -59,39 +59,32 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 /* ───────── 설정 ───────── */
-const PLANE_C   = new THREE.Vector3(0, 3.2, 0);          // 전투기 중심 위치
-const HOME_POS  = new THREE.Vector3(0, 5, 26);            // 기본 카메라 위치
-const HOME_LOOK = new THREE.Vector3(0, 3, 0);             // 기본 카메라 시선
-const FINAL_DIR = new THREE.Vector3(-0.35, 0.38, 0.86).normalize(); // 오른쪽 옆, 살짝 뒤, 살짝 위
-const ANIM_TIME = 2.6;                                    // 카메라 이동 시간(초)
-const SEA_COLOR = 0x7a7f84;
-const SKY_COLOR = 0xc9cccf;
+const EYE = new THREE.Vector3(0, 1.7, 0);             // 사람 눈높이
+const LOOK_PITCH = THREE.MathUtils.degToRad(8);       // 기본 시선: 살짝 올려다봄
+const HOME_LOOK = new THREE.Vector3(0, EYE.y + Math.sin(LOOK_PITCH) * 40, -Math.cos(LOOK_PITCH) * 40);
+const PLANE_DIST = 40;                                // 카메라에서 전투기까지 거리
+const ANIM_TIME = 2.8;
+
+// 기수 방향 (사진 기준: 꼬리 반대쪽이 머리)
+const FWD   = new THREE.Vector3(-0.86, 0, 0.51).normalize();
+const RIGHT = new THREE.Vector3(-FWD.z, 0, FWD.x).normalize();
+const YAW   = Math.atan2(-FWD.z, FWD.x);
+// 확대 시선: 오른쪽 옆, 살짝 대각선 뒤, 살짝 위
+const FINAL_DIR = RIGHT.clone().multiplyScalar(0.75)
+  .addScaledVector(FWD, -0.35)
+  .add(new THREE.Vector3(0, 0.35, 0))
+  .normalize();
 
 // 핫스팟: pos는 전투기 모델 기준 좌표, dx/dy는 라벨 오프셋(px)
 const HOTSPOTS = [
-  { title: 'info',    pos: [0.1,  0.1, 1.0],   dx: -170, dy: -110, text: '첫 번째 내용을 여기에 적으세요.' },
-  { title: 'caution', pos: [-0.7, 0.1, -1.1],  dx: -170, dy:  110, text: '두 번째 내용을 여기에 적으세요.' },
-  { title: '名1',     pos: [-1.0, 0.5, 0.2],   dx:  170, dy: -110, text: '세 번째 내용을 여기에 적으세요.' },
-  { title: 'fyi',     pos: [0.9,  0.3, 0.0],   dx:  170, dy:  110, text: '네 번째 내용을 여기에 적으세요.' },
+  { title: 'info',    pos: [1.9,  0.15, 0.0],   dx: -170, dy: -110, text: '첫 번째 내용을 여기에 적으세요.' },
+  { title: 'caution', pos: [-0.7, 0.05, -2.2],  dx: -170, dy:  110, text: '두 번째 내용을 여기에 적으세요.' },
+  { title: '名1',     pos: [-1.6, 1.0, 0.35],   dx:  170, dy: -110, text: '세 번째 내용을 여기에 적으세요.' },
+  { title: 'fyi',     pos: [0.9,  0.35, 0.0],   dx:  170, dy:  110, text: '네 번째 내용을 여기에 적으세요.' },
 ];
 /* ─────────────────────── */
 
 const isPortrait = () => innerWidth < innerHeight;
-
-// 기본 화면에서 전투기를 얼마나 옮길지 (화면 비율 기준)
-function homeOffset() {
-  return isPortrait()
-    ? { x: -0.14 * innerWidth / 2, y:  0.28 * innerHeight / 2 }   // 모바일: 중앙에서 살짝 오른쪽 위
-    : { x: -0.22 * innerWidth / 2, y:  0.12 * innerHeight / 2 };  // PC
-}
-
-// 확대 시 카메라 거리: 전투기가 화면 가로에 잘리지 않도록 계산
-function zoomDist() {
-  const t = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
-  const aspect = innerWidth / innerHeight;
-  const dW = 5.4 / (2 * t * aspect);
-  return Math.max(7.5, dW);
-}
 
 /* ───────── 렌더러 / 씬 / 카메라 ───────── */
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -100,159 +93,311 @@ renderer.setSize(innerWidth, innerHeight);
 document.body.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(SKY_COLOR);
-scene.fog = new THREE.Fog(SKY_COLOR, 35, 320);
+const FOG_COLOR = 0xd8dce0;
+scene.fog = new THREE.Fog(FOG_COLOR, 60, 900);
 
 const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
-const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 1000);
-camera.position.copy(HOME_POS);
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 2000);
 const lookCur = HOME_LOOK.clone();
+
+// 전투기 위치: 처음 화면에서 중앙 기준 오른쪽 위에 보이도록 계산
+function computePlaneCenter() {
+  camera.position.copy(EYE);
+  camera.lookAt(HOME_LOOK);
+  camera.updateMatrixWorld();
+  camera.updateProjectionMatrix();
+  const ndcX = isPortrait() ? 0.28 : 0.38;   // 화면 가로 기준 오른쪽 위치
+  const ndcY = 0.32;                          // 화면 세로 기준 위쪽 위치
+  const p = new THREE.Vector3(ndcX, ndcY, 0.5).unproject(camera);
+  const dir = p.sub(EYE).normalize();
+  return EYE.clone().addScaledVector(dir, PLANE_DIST);
+}
+let PLANE_C = computePlaneCenter();
+
+camera.position.copy(EYE);
 camera.lookAt(lookCur);
 
-scene.add(new THREE.HemisphereLight(0xffffff, 0x6d7378, 1.1));
-const sun = new THREE.DirectionalLight(0xffffff, 1.0);
-sun.position.set(-4, 10, 6);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x5b6268, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+sun.position.set(-6, 12, 6);
 scene.add(sun);
 
-/* ───────── 바다 ───────── */
-const seaGeo = new THREE.PlaneGeometry(600, 600, 160, 160);
-seaGeo.rotateX(-Math.PI / 2);
-const sea = new THREE.Mesh(seaGeo, new THREE.MeshStandardMaterial({
-  color: SEA_COLOR, roughness: 0.45, metalness: 0.05,
-}));
-scene.add(sea);
-const seaBase = seaGeo.attributes.position.array.slice();
-
-function waveY(x, z, t) {
-  return Math.sin(x * 0.22 + t * 0.9) * 0.14
-       + Math.sin(z * 0.31 - t * 0.7) * 0.12
-       + Math.sin(x * 0.6 + z * 0.4 + t * 1.6) * 0.05;
-}
-
-/* ───────── 구름 (흐릿하게 천천히 이동) ───────── */
-function makeCloudTexture() {
+/* ───────── 하늘 ───────── */
+function makeSkyTexture() {
   const c = document.createElement('canvas');
-  c.width = 256; c.height = 128;
+  c.width = 4; c.height = 512;
   const ctx = c.getContext('2d');
-  for (let i = 0; i < 9; i++) {
-    const cx = 60 + Math.random() * 136, cy = 40 + Math.random() * 48, r = 30 + Math.random() * 34;
-    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-    g.addColorStop(0, 'rgba(255,255,255,0.9)');
-    g.addColorStop(0.5, 'rgba(255,255,255,0.35)');
-    g.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, 256, 128);
+  const g = ctx.createLinearGradient(0, 0, 0, 512);
+  g.addColorStop(0, '#8d959c');
+  g.addColorStop(0.5, '#cfd4d8');
+  g.addColorStop(1, '#d8dce0');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 4, 512);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(1000, 32, 16),
+  new THREE.MeshBasicMaterial({ map: makeSkyTexture(), side: THREE.BackSide, fog: false, depthWrite: false })
+);
+scene.add(sky);
+
+/* ───────── 구름 (부드러운 띠, 천천히 흐름) ───────── */
+function hash2(ix, iy) {
+  let h = (ix * 127 + iy * 311) | 0;
+  h = Math.imul(h ^ (h >>> 13), 0x5bd1e995);
+  h ^= h >>> 15;
+  return (h >>> 0) / 4294967296;
+}
+function vnoise(x, y, px) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const x0 = ((xi % px) + px) % px, x1 = (x0 + 1) % px;
+  const a = hash2(x0, yi), b = hash2(x1, yi), c = hash2(x0, yi + 1), d = hash2(x1, yi + 1);
+  const top = a + (b - a) * u, bot = c + (d - c) * u;
+  return top + (bot - top) * v;
+}
+function smoothstep(e0, e1, x) {
+  const t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1);
+  return t * t * (3 - 2 * t);
+}
+function makeCloudTexture() {
+  const W = 512, H = 256;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(W, H);
+  const d = img.data;
+  for (let y = 0; y < H; y++) {
+    const v = y / H;
+    const fade = Math.pow(Math.sin(Math.PI * v), 0.8);
+    for (let x = 0; x < W; x++) {
+      const u = x / W;
+      let s = 0, amp = 1, tot = 0;
+      for (let k = 0; k < 5; k++) {
+        const f = 1 << k, px = 4 * f;
+        s += amp * vnoise(u * px, v * 4 * f, px);
+        tot += amp; amp *= 0.5;
+      }
+      const dens = smoothstep(0.48, 0.74, s / tot);
+      const i = (y * W + x) * 4;
+      d[i] = 250; d[i + 1] = 251; d[i + 2] = 252;
+      d[i + 3] = dens * fade * 255;
+    }
   }
-  return new THREE.CanvasTexture(c);
+  ctx.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = THREE.RepeatWrapping;
+  t.wrapT = THREE.ClampToEdgeWrapping;
+  return t;
 }
 const cloudTex = makeCloudTexture();
-const clouds = [];
-for (let i = 0; i < 26; i++) {
-  const mat = new THREE.SpriteMaterial({
-    map: cloudTex, color: 0xf2f3f4, transparent: true,
-    opacity: 0.35 + Math.random() * 0.25, depthWrite: false,
-  });
-  const s = new THREE.Sprite(mat);
-  const sc = 50 + Math.random() * 60;
-  s.scale.set(sc, sc * 0.42, 1);
-  s.position.set(-260 + Math.random() * 520, 12 + Math.random() * 16, -90 - Math.random() * 110);
-  s.userData.speed = 0.6 + Math.random() * 1.2;
-  scene.add(s);
-  clouds.push(s);
+const cloudFar = new THREE.Mesh(
+  new THREE.PlaneGeometry(1400, 380),
+  new THREE.MeshBasicMaterial({ map: cloudTex, transparent: true, depthWrite: false, opacity: 0.85, fog: false })
+);
+cloudFar.position.set(0, 140, -420);
+scene.add(cloudFar);
+
+const cloudTex2 = cloudTex.clone();
+cloudTex2.repeat.set(2, 1);
+cloudTex2.needsUpdate = true;
+const cloudNear = new THREE.Mesh(
+  new THREE.PlaneGeometry(1200, 220),
+  new THREE.MeshBasicMaterial({ map: cloudTex2, transparent: true, depthWrite: false, opacity: 0.6, fog: false })
+);
+cloudNear.position.set(0, 70, -300);
+scene.add(cloudNear);
+
+/* ───────── 바다 ───────── */
+const SEA_SIZE = 1400, SEG = 200;
+const seaGeo = new THREE.PlaneGeometry(SEA_SIZE, SEA_SIZE, SEG, SEG);
+seaGeo.rotateX(-Math.PI / 2);
+const seaBase = seaGeo.attributes.position.array.slice();
+const sea = new THREE.Mesh(seaGeo, new THREE.MeshStandardMaterial({
+  color: 0x6b7278, roughness: 0.4, metalness: 0.05,
+}));
+scene.add(sea);
+
+function waveY(x, z, t) {
+  return Math.sin(x * 0.16 + t * 0.7) * 0.18
+       + Math.sin(z * 0.23 - t * 0.55) * 0.14
+       + Math.sin(x * 0.6 + z * 0.45 + t * 1.3) * 0.05;
 }
 
-/* ───────── 라팔 모델 (절차적 생성, 기수는 +X 방향) ───────── */
-function makeRafale() {
+/* ───────── 공군 전투기 모델 (절차적 생성, 기수는 +X 방향) ───────── */
+function makeFighter() {
   const g = new THREE.Group();
-  const black = new THREE.MeshStandardMaterial({ color: 0x0c0c0e, metalness: 0.35, roughness: 0.3, side: THREE.DoubleSide });
-  const dark  = new THREE.MeshStandardMaterial({ color: 0x030304, metalness: 0.2, roughness: 0.7, side: THREE.DoubleSide });
-  const glass = new THREE.MeshStandardMaterial({ color: 0x1d2630, metalness: 0.9, roughness: 0.05 });
 
-  // 동체: 회전체를 만든 뒤 Y축(세로)을 X축(가로)으로 눕힘
-  const prof = [[0,2.1],[0.12,1.95],[0.2,1.7],[0.26,1.3],[0.28,0.6],[0.27,0],
-                [0.25,-0.8],[0.2,-1.5],[0.16,-1.9],[0,-1.92]];
-  const fus = new THREE.LatheGeometry(prof.map(([r, y]) => new THREE.Vector2(r, y)), 32);
+  const body = new THREE.MeshStandardMaterial({ color: 0x3a3e44, metalness: 0.55, roughness: 0.35, side: THREE.DoubleSide });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x17191c, metalness: 0.4, roughness: 0.5, side: THREE.DoubleSide });
+  const panel = new THREE.MeshStandardMaterial({ color: 0x4a4f57, metalness: 0.5, roughness: 0.4 });
+  const glass = new THREE.MeshStandardMaterial({ color: 0x1b2a38, metalness: 0.9, roughness: 0.05, envMapIntensity: 1.5 });
+  const red = new THREE.MeshBasicMaterial({ color: 0xff3b30 });
+  const green = new THREE.MeshBasicMaterial({ color: 0x34d058 });
+  const white = new THREE.MeshBasicMaterial({ color: 0xf2f2f2 });
+
+  // 동체: 회전체 → 축을 X로 눕히고 높이 방향을 살짝 납작하게
+  const prof = [
+    [0.00, 2.70], [0.05, 2.62], [0.12, 2.40], [0.20, 2.10], [0.27, 1.75],
+    [0.33, 1.35], [0.38, 0.90], [0.41, 0.40], [0.41, -0.20], [0.39, -0.80],
+    [0.34, -1.40], [0.28, -1.90], [0.22, -2.30], [0.18, -2.45], [0.00, -2.50],
+  ].map(([r, y]) => new THREE.Vector2(r, y));
+  const fus = new THREE.LatheGeometry(prof, 40);
   fus.rotateZ(-Math.PI / 2);
-  g.add(new THREE.Mesh(fus, black));
+  fus.scale(1, 0.8, 1);
+  g.add(new THREE.Mesh(fus, body));
 
-  // 주날개 (델타형, 좌우 대칭 한 장)
+  // 공기흡입구 (동체 아래쪽)
+  const intake = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.22, 0.7), dark);
+  intake.position.set(0.7, -0.38, 0);
+  g.add(intake);
+  const intakeLip = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.05, 0.76), panel);
+  intakeLip.position.set(0.7, -0.27, 0);
+  g.add(intakeLip);
+
+  // 주날개 (좌우 한 장의 후퇴익 형태, 두께는 베벨로 살짝)
   const wingShape = new THREE.Shape();
-  wingShape.moveTo(1.1, 0.2);
-  wingShape.lineTo(-1.5, 1.85);
-  wingShape.lineTo(-1.25, 0.25);
-  wingShape.lineTo(-1.25, -0.25);
-  wingShape.lineTo(-1.5, -1.85);
-  wingShape.lineTo(1.1, -0.2);
+  wingShape.moveTo(0.9, 0.25);
+  wingShape.lineTo(-0.7, 2.45);
+  wingShape.lineTo(-1.55, 2.45);
+  wingShape.lineTo(-1.35, 0.3);
+  wingShape.lineTo(-1.35, -0.3);
+  wingShape.lineTo(-1.55, -2.45);
+  wingShape.lineTo(-0.7, -2.45);
+  wingShape.lineTo(0.9, -0.25);
   wingShape.closePath();
-  const wingGeo = new THREE.ExtrudeGeometry(wingShape, { depth: 0.05, bevelEnabled: false });
+  const wingGeo = new THREE.ExtrudeGeometry(wingShape, {
+    depth: 0.05, bevelEnabled: true, bevelThickness: 0.015, bevelSize: 0.02, bevelSegments: 2,
+  });
+  wingGeo.translate(0, 0, -0.025);
   wingGeo.rotateX(-Math.PI / 2);
-  const wing = new THREE.Mesh(wingGeo, black);
-  wing.position.y = -0.02;
+  const wing = new THREE.Mesh(wingGeo, body);
+  wing.position.set(0, -0.12, 0);
   g.add(wing);
 
-  // 카나드 (앞쪽 작은 날개)
-  const canShape = new THREE.Shape();
-  canShape.moveTo(1.6, 0.08);
-  canShape.lineTo(1.0, 0.8);
-  canShape.lineTo(0.9, 0.08);
-  canShape.lineTo(0.9, -0.08);
-  canShape.lineTo(1.0, -0.8);
-  canShape.lineTo(1.6, -0.08);
-  canShape.closePath();
-  const canGeo = new THREE.ExtrudeGeometry(canShape, { depth: 0.04, bevelEnabled: false });
-  canGeo.rotateX(-Math.PI / 2);
-  const can = new THREE.Mesh(canGeo, black);
-  can.position.y = 0.05;
-  g.add(can);
+  // 날개 위 패널 라인 (약간 어두운 띠)
+  for (const s of [-1, 1]) {
+    const strip = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.012, 0.05), dark);
+    strip.position.set(-0.2, -0.105, s * 1.2);
+    strip.rotation.y = s * 0.0;
+    g.add(strip);
+  }
 
-  // 수직꼬리날개 (좌우 두 개, 바깥쪽으로 살짝 기울임)
+  // 수직꼬리날개 (두 장, 바깥쪽으로 살짝 기울임)
   const finShape = new THREE.Shape();
-  finShape.moveTo(0.2, 0.0);
-  finShape.lineTo(-0.9, 1.0);
-  finShape.lineTo(-1.5, 1.0);
-  finShape.lineTo(-1.25, 0.0);
+  finShape.moveTo(0.4, 0.0);
+  finShape.lineTo(-0.5, 1.35);
+  finShape.lineTo(-0.95, 1.45);
+  finShape.lineTo(-0.8, 0.0);
   finShape.closePath();
-  const finGeo = new THREE.ExtrudeGeometry(finShape, { depth: 0.05, bevelEnabled: false });
+  const finGeo = new THREE.ExtrudeGeometry(finShape, {
+    depth: 0.05, bevelEnabled: true, bevelThickness: 0.01, bevelSize: 0.015, bevelSegments: 1,
+  });
   finGeo.translate(0, 0, -0.025);
   for (const s of [-1, 1]) {
-    const f = new THREE.Mesh(finGeo, black);
-    f.position.set(-0.1, 0.12, s * 0.2);
-    f.rotation.x = s * 0.12;
+    const f = new THREE.Mesh(finGeo, body);
+    f.position.set(-1.25, 0.1, s * 0.22);
+    f.rotation.x = s * 0.14;
     g.add(f);
   }
 
-  // 엔진 노즐 (쌍발)
-  const nozGeo = new THREE.CylinderGeometry(0.13, 0.11, 0.3, 20, 1, true);
-  nozGeo.rotateZ(-Math.PI / 2);
+  // 수평 안정익 (꼬리 쪽 작은 날개)
+  const stabShape = new THREE.Shape();
+  stabShape.moveTo(-0.9, 0.1);
+  stabShape.lineTo(-1.7, 0.95);
+  stabShape.lineTo(-2.0, 0.95);
+  stabShape.lineTo(-1.95, 0.1);
+  stabShape.closePath();
+  const stabGeo = new THREE.ExtrudeGeometry(stabShape, { depth: 0.04, bevelEnabled: false });
+  stabGeo.translate(0, 0, -0.02);
+  stabGeo.rotateX(-Math.PI / 2);
+  const stab = new THREE.Mesh(stabGeo, body);
+  stab.position.set(0, 0.02, 0);
+  g.add(stab);
+
+  // 캐노피 (조종석 유리)
+  const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.3, 28, 18), glass);
+  canopy.scale.set(2.1, 0.7, 0.85);
+  canopy.position.set(1.05, 0.28, 0);
+  g.add(canopy);
+
+  // 캐노피 프레임 (뒤쪽 힌지 라인)
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.04, 0.06), dark);
+  frame.position.set(1.0, 0.45, 0);
+  frame.rotation.z = -0.2;
+  g.add(frame);
+
+  // 배기 노즐 (쌍발, 뒤쪽)
   for (const s of [-1, 1]) {
-    const n = new THREE.Mesh(nozGeo, dark);
-    n.position.set(-1.98, 0, s * 0.14);
-    g.add(n);
+    const outer = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.16, 0.45, 28, 1, true), dark);
+    outer.rotation.z = -Math.PI / 2;
+    outer.position.set(-2.55, -0.02, s * 0.2);
+    g.add(outer);
+
+    const inner = new THREE.Mesh(new THREE.CircleGeometry(0.15, 24), new THREE.MeshBasicMaterial({ color: 0x1a0d08 }));
+    inner.rotation.y = Math.PI / 2;
+    inner.position.set(-2.78, -0.02, s * 0.2);
+    g.add(inner);
   }
 
-  // 캐노피
-  const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.22, 24, 16), glass);
-  canopy.scale.set(1.8, 0.75, 0.9);
-  canopy.position.set(1.05, 0.2, 0);
-  g.add(canopy);
+  // 날개 밑 미사일 (좌우 각 2발)
+  const missileGeo = new THREE.CylinderGeometry(0.06, 0.06, 1.5, 14);
+  missileGeo.rotateZ(Math.PI / 2);
+  const noseGeo = new THREE.ConeGeometry(0.06, 0.2, 14);
+  noseGeo.rotateZ(-Math.PI / 2);
+  for (const s of [-1, 1]) {
+    for (const x of [0.3, -0.5]) {
+      const pylon = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.12, 0.06), dark);
+      pylon.position.set(x, -0.2, s * 1.25);
+      g.add(pylon);
+
+      const m = new THREE.Mesh(missileGeo, panel);
+      m.position.set(x, -0.3, s * 1.25);
+      g.add(m);
+
+      const tip = new THREE.Mesh(noseGeo, dark);
+      tip.position.set(x + 0.85, -0.3, s * 1.25);
+      g.add(tip);
+
+      const fin = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.14, 0.02), dark);
+      fin.position.set(x - 0.6, -0.3, s * 1.25);
+      g.add(fin);
+    }
+  }
+
+  // 날개 끝 항법등 (왼쪽 빨강, 오른쪽 초록)
+  const navRed = new THREE.Mesh(new THREE.SphereGeometry(0.035, 10, 8), red);
+  navRed.position.set(-0.7, 0.02, -2.45);
+  g.add(navRed);
+  const navGreen = new THREE.Mesh(new THREE.SphereGeometry(0.035, 10, 8), green);
+  navGreen.position.set(-0.7, 0.02, 2.45);
+  g.add(navGreen);
+
+  // 기수 측면 식별 표시 (흰색 작은 띠)
+  const marking = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.05, 0.02), white);
+  marking.position.set(1.4, 0.05, 0.42);
+  g.add(marking);
 
   return g;
 }
 
-// 전투기 루트(고정 위치) > 본체(떠오르기 애니메이션)
 const planeRoot = new THREE.Group();
 planeRoot.position.copy(PLANE_C);
+planeRoot.rotation.y = YAW;
 scene.add(planeRoot);
 
 const planeBody = new THREE.Group();
 planeRoot.add(planeBody);
-planeBody.add(makeRafale());
+planeBody.add(makeFighter());
 
-// 클릭 판정용 보이지 않는 구
 const hitMesh = new THREE.Mesh(
-  new THREE.SphereGeometry(2.2, 12, 8),
+  new THREE.SphereGeometry(3.2, 12, 8),
   new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
 );
 planeRoot.add(hitMesh);
@@ -306,12 +451,12 @@ function updateHotspots() {
     planeBody.localToWorld(world);
     const p = world.clone().project(camera);
     const visible = p.z < 1;
-    const x = (p.x * 0.5 + 0.5) * w;
-    const y = (-p.y * 0.5 + 0.5) * hgt;
-    const tx = x + h.dx, ty = y + h.dy;
     const d = visible ? '' : 'none';
     line.style.display = dot.style.display = tag.style.display = d;
     if (!visible) return;
+    const x = (p.x * 0.5 + 0.5) * w;
+    const y = (-p.y * 0.5 + 0.5) * hgt;
+    const tx = x + h.dx, ty = y + h.dy;
     dot.style.left = x + 'px';  dot.style.top = y + 'px';
     tag.style.left = tx + 'px'; tag.style.top = ty + 'px';
     line.setAttribute('x1', x);  line.setAttribute('y1', y);
@@ -321,37 +466,38 @@ function updateHotspots() {
 
 /* ───────── 카메라 상태 & 전환 ───────── */
 let zoomed = false;
-let anim = null;      // { from, mid, to, t }
-let offX = 0, offY = 0;
+let anim = null;   // { from, mid, to, t }
 
 function homeState() {
-  const o = homeOffset();
-  return { pos: HOME_POS.clone(), look: HOME_LOOK.clone(), x: o.x, y: o.y };
+  return { pos: EYE.clone(), look: HOME_LOOK.clone() };
 }
 function zoomState() {
   const d = zoomDist();
   return {
     pos: PLANE_C.clone().addScaledVector(FINAL_DIR, d),
-    look: PLANE_C.clone(), x: 0, y: 0,
+    look: PLANE_C.clone(),
   };
 }
-// 위에서 아래를 내려다보는 중간 지점
+// 전투기 위쪽에서 아래를 내려다보는 중간 지점
 function topState() {
   const d = zoomDist();
   return {
     pos: PLANE_C.clone().add(new THREE.Vector3(0, d * 1.2, 0.02)),
-    look: PLANE_C.clone(), x: 0, y: 0,
+    look: PLANE_C.clone(),
   };
 }
+function zoomDist() {
+  const t = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const aspect = innerWidth / innerHeight;
+  return Math.max(7.5, 6.0 / (2 * t * aspect));
+}
 function snapshot() {
-  return { pos: camera.position.clone(), look: lookCur.clone(), x: offX, y: offY };
+  return { pos: camera.position.clone(), look: lookCur.clone() };
 }
 function lerpState(a, b, k) {
   return {
     pos: a.pos.clone().lerp(b.pos, k),
     look: a.look.clone().lerp(b.look, k),
-    x: a.x + (b.x - a.x) * k,
-    y: a.y + (b.y - a.y) * k,
   };
 }
 const easeInOut = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
@@ -360,8 +506,6 @@ function applyState(s) {
   camera.position.copy(s.pos);
   lookCur.copy(s.look);
   camera.lookAt(lookCur);
-  offX = s.x; offY = s.y;
-  camera.setViewOffset(innerWidth, innerHeight, offX, offY, innerWidth, innerHeight);
 }
 
 function startAnim(toZoom) {
@@ -395,6 +539,10 @@ addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  if (!zoomed && !anim) {
+    PLANE_C = computePlaneCenter();
+    planeRoot.position.copy(PLANE_C);
+  }
 });
 
 /* ───────── 애니메이션 루프 ───────── */
@@ -412,11 +560,12 @@ function animate() {
   pos.needsUpdate = true;
   seaGeo.computeVertexNormals();
 
-  // 구름 천천히 이동
-  clouds.forEach(c => {
-    c.position.x += c.userData.speed * dt;
-    if (c.position.x > 260) c.position.x = -260;
-  });
+  // 구름 천천히 흐르기
+  cloudTex.offset.x += dt * 0.004;
+  cloudTex2.offset.x += dt * 0.007;
+
+  // 하늘 돔은 카메라를 따라감
+  sky.position.copy(camera.position);
 
   // 전투기 떠다니는 움직임 (루트는 고정, 본체만 움직임)
   planeBody.position.y = Math.sin(t * 1.2) * 0.12;
@@ -430,22 +579,19 @@ function animate() {
     applyState(s);
     if (anim.t >= 1) {
       anim = null;
-      if (zoomed) backBtn.style.display = 'block';
-      if (zoomed) hint.style.opacity = 0;
+      if (zoomed) {
+        backBtn.style.display = 'block';
+        updateHotspots();
+      }
     }
   } else {
-    // 대기 상태: 화면 비율이 바뀌어도 맞게 유지
     applyState(zoomed ? zoomState() : homeState());
-  }
-
-  if (zoomed && !anim) {
-    updateHotspots();
+    if (zoomed) updateHotspots();
   }
 
   renderer.render(scene, camera);
 }
 
-// 시작 시 힌트 표시
 hint.style.opacity = 1;
 animate();
 </script>
